@@ -3,60 +3,124 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Карта Меток</title>
+    <title>Народная Карта Братска</title>
+    
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        body, html { margin: 0; padding: 0; height: 100%; background: #000; }
+        body, html { margin: 0; padding: 0; height: 100%; background: #1a1a1a; font-family: sans-serif; }
         #map { height: 100vh; width: 100vw; }
         
-        /* Красивая кнопка */
+        /* Кнопка GPS */
         .add-btn {
-            position: absolute; bottom: 40px; left: 50%;
+            position: absolute; bottom: 30px; left: 50%;
             transform: translateX(-50%); z-index: 1000;
             background: #0088cc; color: white; padding: 15px 25px;
-            border-radius: 50px; border: none; font-size: 16px;
-            font-weight: bold; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            border-radius: 50px; border: none; font-weight: bold;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         }
         
-        /* Скрываем стандартную панель с флагом и ссылками */
-        .leaflet-control-attribution { display: none !important; }
+        /* Стиль всплывающего окна с фото */
+        .popup-img {
+            width: 100%;
+            max-width: 250px;
+            border-radius: 8px;
+            margin-top: 10px;
+            display: block;
+        }
+        .leaflet-popup-content-wrapper { border-radius: 12px; background: #fff; }
     </style>
 </head>
 <body>
 
     <div id="map"></div>
-    <button class="add-btn" onclick="getLocation()">📍 Найти меня</button>
+    <button class="add-btn" onclick="getLocation()">📍 ГДЕ Я?</button>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    
     <script>
-        // Инициализируем карту
-        var map = L.map('map', { zoomControl: false }).setView([55.75, 37.61], 13);
+        // --- НАСТРОЙКИ ПОДКЛЮЧЕНИЯ ---
+        const SUPABASE_URL = 'https://ucyhfxapegpoubixlayp.supabase.co'; 
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjeWhmeGFwZWdwb3ViaXhsYXlwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQwMDMxMjAsImV4cCI6MjA4OTU3OTEyMH0.HkJ5Y0SPBjiCcg8eErtCWhHYIwlA4HV9TrfTRxpHIh0'; 
+        
+        const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-        // Ставим СПУТНИКОВЫЕ карты (World Imagery)
-        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            maxZoom: 19
-        }).addTo(map);
+        // --- ИНИЦИАЛИЗАЦИЯ КАРТЫ ---
+        // Установим центр на Братск
+        var map = L.map('map', { zoomControl: false }).setView([56.13, 101.60], 12);
+        
+        // Слой спутниковой карты (ArcGIS)
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}').addTo(map);
 
-        // Функция поиска (заработает после выгрузки в интернет)
+        // --- ЗАГРУЗКА МЕТОК ИЗ БАЗЫ ---
+        async function loadMarkers() {
+            const { data, error } = await supabaseClient.from('markers').select('*');
+            if (data) {
+                data.forEach(m => {
+                    let popupContent = `<b>${m.content}</b>`;
+                    if (m.image_url) {
+                        popupContent += `<br><img src="${m.image_url}" class="popup-img">`;
+                    }
+                    L.marker([m.lat, m.lng]).addTo(map).bindPopup(popupContent);
+                });
+            }
+        }
+        loadMarkers();
+
+        // --- ДОБАВЛЕНИЕ НОВОЙ МЕТКИ ПРИ КЛИКЕ ---
+        map.on('click', async function(e) {
+            // Создаем скрытый выбор файла для камеры
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*'; 
+            
+            input.onchange = async () => {
+                const file = input.files[0];
+                const text = prompt("Что здесь происходит? (ДПС, Яма, ДТП)");
+                
+                if (file && text) {
+                    const fileName = 'img_' + Date.now() + '.jpg';
+                    
+                    // 1. Загружаем фото в Storage (корзина 'images')
+                    const { data: imgData, error: imgErr } = await supabaseClient.storage
+                        .from('images')
+                        .upload(fileName, file);
+
+                    if (imgErr) return alert("Ошибка загрузки фото: " + imgErr.message);
+
+                    // Ссылка на фото
+                    const imgUrl = `${SUPABASE_URL}/storage/v1/object/public/images/${fileName}`;
+
+                    // 2. Сохраняем данные в таблицу 'markers'
+                    const { error: dbErr } = await supabaseClient.from('markers').insert([{ 
+                        lat: e.latlng.lat, 
+                        lng: e.latlng.lng, 
+                        content: text,
+                        image_url: imgUrl 
+                    }]);
+
+                    if (dbErr) return alert("Ошибка базы данных: " + dbErr.message);
+
+                    // 3. Ставим метку на карту
+                    L.marker(e.latlng).addTo(map).bindPopup(`<b>${text}</b><br><img src="${imgUrl}" class="popup-img">`).openPopup();
+                }
+            };
+            input.click(); // Открываем камеру/галерею
+        });
+
+        // --- ГЕОЛОКАЦИЯ ---
         function getLocation() {
-            map.locate({setView: true, maxZoom: 17});
+            map.locate({setView: true, maxZoom: 16});
         }
 
         map.on('locationfound', function(e) {
-            L.marker(e.latlng).addTo(map).bindPopup("Я тут").openPopup();
+            L.circle(e.latlng, {radius: 15, color: 'cyan'}).addTo(map).bindPopup("Ты здесь").openPopup();
         });
 
         map.on('locationerror', function() {
-            alert("Для работы GPS нужен HTTPS или разрешение в браузере.");
+            alert("Не удалось определить местоположение. Проверь GPS.");
         });
 
-        // Ставим метку по клику
-        map.on('click', function(e) {
-            var text = prompt("Что тут?");
-            if (text) {
-                L.marker(e.latlng).addTo(map).bindPopup(text).openPopup();
-            }
-        });
     </script>
 </body>
 </html>
